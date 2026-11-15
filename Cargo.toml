@@ -1,0 +1,14 @@
+[package]
+name = "nib"
+version = "0.1.0"
+edition = "2021"
+description = "A terminal for macOS that shows each command as a block and gives you a text box to type in"
+license = "MIT"
+publish = false
+
+[dependencies]
+iced = { version = "0.14", features = ["advanced", "canvas", "tokio"] }
+libc = "0.2"
+tokio = { version = "1", features = ["time"] }
+unicode-width = "0.2"
+vte = "0.15"
