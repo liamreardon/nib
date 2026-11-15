@@ -9,7 +9,7 @@ What comes next, with rough hours for each part. About 30 hours in all.
 
 ## Completion (about 3 hours)
 
-- Completion that knows the command: git subcommands and branches, npm and cargo scripts, make targets, ssh hosts from ~/.ssh/config.
+- Completion that knows more commands: npm and cargo scripts, make targets, ssh hosts from ~/.ssh/config, and git's flags.
 
 ## Blocks (about 5 hours)
 
