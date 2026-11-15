@@ -39,7 +39,7 @@ What comes next, with rough hours for each part. About 28 hours in all.
 
 - QA scripts read from files, so a new case doesn't need a rebuild.
 - QA scripts for vim, less and a Python REPL.
-- CI that builds and runs the tests on macOS.
+- CI on Linux once Nib builds there.
 
 ## Not planned
 

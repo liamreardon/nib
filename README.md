@@ -1,5 +1,7 @@
 # Nib
 
+[![CI](https://github.com/liamreardon/nib/actions/workflows/ci.yml/badge.svg)](https://github.com/liamreardon/nib/actions/workflows/ci.yml)
+
 ![Nib with four command blocks, the hover buttons on one of them, and Tab completion listing files above the input box](docs/screenshot.png)
 
 Nib is a terminal for macOS. Every command you run gets a card with the folder it ran in, the command, and its output. The card also shows how long the command took once that passes a tenth of a second, and the exit code in red when it fails.
