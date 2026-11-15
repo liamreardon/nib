@@ -45,11 +45,17 @@ enum Step {
 }
 use Step::*;
 
+/// The folder Nib was started from, which is the repo when QA runs as the README says.
+/// Read at run time, so a release build carries no path from the machine that built it.
+fn start_dir() -> String {
+    std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_else(|_| ".".into())
+}
+
 fn script() -> Vec<Step> {
     vec![
         Until("shell sends block marks", |a| a.term.integrated, 15_000),
         EditorFocused("input box has the keyboard at the prompt", true),
-        Cmd(concat!("cd ", env!("CARGO_MANIFEST_DIR"))),
+        Cmd(Box::leak(format!("cd {}", start_dir()).into_boxed_str())),
         Until("cd finished", finished, 5_000),
         Cmd("ls"),
         Until("ls finished", finished, 5_000),
@@ -132,6 +138,7 @@ fn script() -> Vec<Step> {
         EditorFocused("box has the keyboard again", true),
         Check("claude block finished", |a| last_cmd(a, 0).is_some_and(|b| b.cmd == "claude" && !b.running())),
         Shot("05-after"),
+        ClearBox, // without claude on PATH, the keys meant for it are still in the box
         Cmd("vim -u NONE -i NONE -N -n"),
         Until("vim takes the whole window", |a| a.term.alt_screen, 5_000),
         Keys("ihello vim"),
@@ -151,7 +158,7 @@ fn demo() -> Vec<Step> {
     vec![
         Until("shell sends block marks", |a| a.term.integrated, 15_000),
         // ~ rather than the full path, so the picture shows no home folder. Leaked once per demo run.
-        Cmd(Box::leak(format!("cd {}", crate::render::tilde(env!("CARGO_MANIFEST_DIR"))).into_boxed_str())),
+        Cmd(Box::leak(format!("cd {}", crate::render::tilde(&start_dir())).into_boxed_str())),
         Until("cd finished", finished, 5_000),
         Cmd("git --no-pager log --oneline --no-merges -5"),
         Until("git log finished", finished, 5_000),

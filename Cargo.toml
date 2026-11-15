@@ -2,7 +2,7 @@
 name = "nib"
 version = "0.1.0"
 edition = "2021"
-description = "A terminal for macOS that shows each command as a block and gives you a text box to type in"
+description = "A macOS terminal where the command line is a text editor"
 license = "MIT"
 publish = false
 
