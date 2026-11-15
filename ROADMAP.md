@@ -1,30 +1,34 @@
 # Roadmap
 
-What comes next, with rough hours for each part. About 26 hours in all.
+What comes next, with rough hours for each part. About 31 hours in all.
 
-## Shells (about 4 hours)
+## Shells (about 3 hours)
 
-- Blocks in bash, with the hooks loaded through --rcfile, using PROMPT_COMMAND and a DEBUG trap.
 - Blocks in fish, through a conf.d file that hooks the fish_preexec and fish_postexec events.
+- On macOS's bash 3.2, keep a DEBUG trap from your config working next to the one Nib adds. Today Nib's replaces it.
 
 ## Completion (about 4 hours)
 
 - Completion that knows the command: git subcommands and branches, npm and cargo scripts, make targets, ssh hosts from ~/.ssh/config.
 - Tab in the middle of a draft, not only at the end.
 
-## Blocks (about 6 hours)
+## Blocks (about 5 hours)
 
-- Copy a block's command or output with one click, and rerun a command from its block.
 - Collapse long output, and move between blocks from the keyboard.
 - Find text across every block with Cmd+F.
 - Save a session's blocks to a file and open it again later.
 
-## Terminal fixes (about 4 hours)
+## Links (about 3 hours)
+
+- OSC 8 hyperlinks, and URLs and file paths found in output, opened with Cmd+click.
+
+## Remote shells (about 4 hours)
+
+- Blocks after you ssh into another machine, by sending the hooks to the remote shell for that session.
+
+## Terminal fixes (about 2 hours)
 
 - Mouse reporting and focus events for programs that ask for them, like htop or vim with the mouse on.
-- The DEC line drawing characters (ESC ( 0) that older programs use for boxes.
-- Combining marks, attached to the cell before them so accents draw right.
-- Writes to the shell from a separate thread, so a big paste doesn't freeze the window.
 
 ## Window (about 6 hours)
 
@@ -32,10 +36,15 @@ What comes next, with rough hours for each part. About 26 hours in all.
 - A settings file for the font, text size, colors and key bindings.
 - A .app bundle with an icon, so Nib opens from the Dock.
 
+## Linux (about 2 hours)
+
+- Build and run on Linux. forkpty and iced both work there; what's missing is testing it and fixing what turns up.
+
 ## Testing (about 2 hours)
 
 - QA scripts read from files, so a new case doesn't need a rebuild.
 - QA scripts for vim, less and a Python REPL.
+- CI that builds and runs the tests on macOS.
 
 ## Not planned
 
