@@ -15,6 +15,16 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// Which mouse events a program asked for (DEC modes 1000, 1002, 1003).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum MouseMode {
+    #[default]
+    Off,
+    Click,  // presses, releases, wheel
+    Drag,   // and motion while a button is held
+    Motion, // and all motion
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Style {
     pub fg: Color,
@@ -118,6 +128,9 @@ pub struct Term {
     pub app_cursor: bool,
     pub bracketed_paste: bool,
     pub cursor_visible: bool,
+    pub mouse: MouseMode,
+    pub mouse_sgr: bool,     // mode 1006: reports as CSI < b;x;y M/m instead of raw bytes
+    pub focus_events: bool,  // mode 1004: tell the program when the window gains or loses focus
     autowrap: bool,
     graphics: [bool; 2], // G0/G1 set to DEC line drawing (ESC ( 0, ESC ) 0)
     shifted: bool,       // SO picked G1, SI goes back to G0
@@ -152,6 +165,9 @@ impl Term {
             app_cursor: false,
             bracketed_paste: false,
             cursor_visible: true,
+            mouse: MouseMode::Off,
+            mouse_sgr: false,
+            focus_events: false,
             autowrap: true,
             graphics: [false; 2],
             shifted: false,
@@ -602,7 +618,12 @@ impl Perform for Term {
                         47 | 1047 => self.set_alt(on, false),
                         1049 => self.set_alt(on, true),
                         2004 => self.bracketed_paste = on,
-                        _ => {} // ponytail: mouse reporting, focus events, sync output ignored until an app needs them
+                        1000 => self.mouse = if on { MouseMode::Click } else { MouseMode::Off },
+                        1002 => self.mouse = if on { MouseMode::Drag } else { MouseMode::Off },
+                        1003 => self.mouse = if on { MouseMode::Motion } else { MouseMode::Off },
+                        1004 => self.focus_events = on,
+                        1006 => self.mouse_sgr = on,
+                        _ => {} // ponytail: synchronized output (2026) and the rest ignored until an app needs them
                     }
                 }
             }
@@ -750,6 +771,16 @@ mod tests {
         assert!(!t.alt_screen);
         assert_eq!(t.row_text(0), "shell");
         assert_eq!(t.col, 5);
+    }
+
+    #[test]
+    fn mouse_and_focus_modes() {
+        let mut t = term("\x1b[?1002h\x1b[?1006h\x1b[?1004h");
+        assert_eq!((t.mouse, t.mouse_sgr, t.focus_events), (MouseMode::Drag, true, true));
+        t.feed(b"\x1b[?1003h");
+        assert_eq!(t.mouse, MouseMode::Motion);
+        t.feed(b"\x1b[?1003l\x1b[?1006l\x1b[?1004l");
+        assert_eq!((t.mouse, t.mouse_sgr, t.focus_events), (MouseMode::Off, false, false));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Roadmap
 
-What comes next, with rough hours for each part. About 30 hours in all.
+What comes next, with rough hours for each part. About 28 hours in all.
 
 ## Shells (about 3 hours)
 
@@ -24,10 +24,6 @@ What comes next, with rough hours for each part. About 30 hours in all.
 ## Remote shells (about 4 hours)
 
 - Blocks after you ssh into another machine, by sending the hooks to the remote shell for that session.
-
-## Terminal fixes (about 2 hours)
-
-- Mouse reporting and focus events for programs that ask for them, like htop or vim with the mouse on.
 
 ## Window (about 6 hours)
 
