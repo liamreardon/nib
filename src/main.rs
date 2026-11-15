@@ -620,7 +620,7 @@ fn pty_stream() -> impl iced::futures::Stream<Item = Msg> {
     iced::stream::channel(100, async |mut out: mpsc::Sender<Msg>| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        let pty = match Pty::spawn(&shell, &home, 80, 24) {
+        let pty = match Pty::spawn(&shell, &shell::argv(&shell), &home, 80, 24) {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 eprintln!("nib: could not start {shell}: {e}");
@@ -677,10 +677,10 @@ fn main() -> iced::Result {
     // Launched from inside Claude Code? Drop its markers so `claude` in here acts like a fresh session.
     std::env::remove_var("CLAUDECODE");
     std::env::remove_var("CLAUDE_CODE_CHILD_SESSION");
-    // Block marks for zsh. Set before any threads start; other shells just get the plain terminal.
+    // Block marks for zsh and bash. Set before any threads start; other shells get the plain terminal.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     if let Err(e) = shell::install(&shell) {
-        eprintln!("nib: no blocks this time, could not write the zsh hooks: {e}");
+        eprintln!("nib: no blocks this time, could not write the shell hooks: {e}");
     }
     iced::application(App::new, App::update, App::view)
         .title(|a: &App| if a.term.title.is_empty() { "Nib".to_string() } else { a.term.title.clone() })
