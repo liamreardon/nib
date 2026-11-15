@@ -19,14 +19,15 @@ fn winsize(cols: u16, rows: u16) -> libc::winsize {
 }
 
 impl Pty {
-    /// `shell` must be an absolute path. The child inherits our environment (TERM etc. set in main).
-    pub fn spawn(shell: &str, dir: &str, cols: u16, rows: u16) -> io::Result<Pty> {
+    /// `prog` must be an absolute path; `argv` comes from `shell::argv`. The child inherits our
+    /// environment (TERM etc. set in main).
+    pub fn spawn(prog: &str, argv: &[String], dir: &str, cols: u16, rows: u16) -> io::Result<Pty> {
         // Build every C string before fork: after fork only async-signal-safe calls are allowed.
-        let name = shell.rsplit('/').next().unwrap_or(shell);
-        let prog = CString::new(shell)?;
-        let argv0 = CString::new(format!("-{name}"))?; // leading '-' = login shell, so PATH gets set up
+        let prog = CString::new(prog)?;
+        let args = argv.iter().map(|a| CString::new(a.as_str())).collect::<Result<Vec<_>, _>>()?;
         let dir = CString::new(dir)?;
-        let argv = [argv0.as_ptr(), std::ptr::null()];
+        let mut argv: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+        argv.push(std::ptr::null());
         let mut ws = winsize(cols, rows);
         let mut fd = -1;
         let pid = unsafe { libc::forkpty(&mut fd, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
@@ -117,7 +118,7 @@ mod tests {
         let empty = std::env::temp_dir().join("nib-test-zdotdir");
         std::fs::create_dir_all(&empty).unwrap();
         std::env::set_var("ZDOTDIR", &empty);
-        let pty = Pty::spawn("/bin/zsh", "/tmp", 80, 24).unwrap();
+        let pty = Pty::spawn("/bin/zsh", &crate::shell::argv("/bin/zsh"), "/tmp", 80, 24).unwrap();
         let mut r = pty.reader().unwrap();
         let mut t = Term::new(80, 24);
         // The quotes split the marker so the terminal's echo of this line can't match it.
@@ -147,7 +148,7 @@ mod tests {
         let empty = std::env::temp_dir().join("nib-test-zdotdir");
         std::fs::create_dir_all(&empty).unwrap();
         std::env::set_var("ZDOTDIR", &empty);
-        let pty = std::sync::Arc::new(Pty::spawn("/bin/zsh", "/tmp", 80, 24).unwrap());
+        let pty = std::sync::Arc::new(Pty::spawn("/bin/zsh", &crate::shell::argv("/bin/zsh"), "/tmp", 80, 24).unwrap());
         let (mut r, mut t) = (pty.reader().unwrap(), Term::new(80, 24));
         pty.write(b"PS1='REA''DY> '\r");
         assert!(wait_for(&mut r, &mut t, "READY>"), "no prompt");

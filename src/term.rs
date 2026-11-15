@@ -244,6 +244,13 @@ impl Term {
             b.end = Some(end.max(b.start.unwrap_or(0)));
             b.exit = exit;
             b.took = Some(b.began.elapsed());
+            // Output that ended mid-line (`printf abc`) keeps that line, and the prompt starts on a
+            // fresh one so it never lands inside the block. zsh does this itself (PROMPT_SP), bash doesn't.
+            if self.col > 0 || self.wrap_pending {
+                self.col = 0;
+                self.wrap_pending = false;
+                self.linefeed();
+            }
         }
     }
 
@@ -795,6 +802,10 @@ mod tests {
         t.begin_block("seq", "");
         t.feed(b"\r\n\x1b]133;C\x071\r\n2\r\n3\r\n4\r\nno-newline\x1b]133;D;0\x07");
         assert_eq!(block_lines(&t, &t.blocks[0]), ["1", "2", "3", "4", "no-newline"]);
+        // The next prompt starts on its own line, not after "no-newline".
+        t.feed(b"\x1b]133;A\x07$ ");
+        assert_eq!((t.row_text(t.row), t.col), ("$".into(), 2));
+        assert_eq!(block_lines(&t, &t.blocks[0]).last().unwrap(), "no-newline");
     }
 
     #[test]

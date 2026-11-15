@@ -1,5 +1,6 @@
-//! zsh integration: a tiny ZDOTDIR shim that loads the user's own config, then adds hooks that
-//! mark each prompt and command with OSC 133 (and the folder with OSC 7) so Nib can draw blocks.
+//! Shell integration: hooks that mark each prompt and command with OSC 133 (and the folder with
+//! OSC 7) so Nib can draw blocks. zsh gets them from a tiny ZDOTDIR shim, bash from an rcfile; both
+//! load the user's usual config first.
 
 use std::path::PathBuf;
 
@@ -34,8 +35,60 @@ unset NIB_USER_ZDOTDIR
     )
 }
 
-/// Writes the shim and points the next zsh we start at it. Other shells get no blocks (plain terminal).
+/// bash rcfile. Nib starts bash with --rcfile pointing here, which skips the login files, so it loads
+/// them the way a login shell would before adding the hooks. A D mark goes out at every prompt; the
+/// terminal ignores it when no command was running.
+const BASH_HOOKS: &str = r#"# Nib block marks for bash.
+[[ -r /etc/profile ]] && . /etc/profile
+for _nib_f in ~/.bash_profile ~/.bash_login ~/.profile; do
+  [[ -r $_nib_f ]] && { . "$_nib_f"; break; }
+done
+unset _nib_f
+_nib_precmd() {
+  printf '\e]133;D;%s\e]7;file://%s%s\e]133;A' "$?" "$HOSTNAME" "$PWD"
+}
+if (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404 )); then
+  PS0+='\e]133;C' # printed once a command is read, never for an empty line
+  PROMPT_COMMAND="_nib_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+else
+  # bash 3.2 (macOS /bin/bash) has no PS0: mark the start from the first DEBUG trap after a prompt.
+  # ponytail: this replaces a DEBUG trap set by the user's config; chain it if someone needs both.
+  _nib_preexec() {
+    if [[ -z $_nib_ready || $BASH_COMMAND == _nib_precmd ]]; then
+      _nib_ready=
+      return
+    fi
+    _nib_ready=
+    printf '\e]133;C'
+  }
+  trap _nib_preexec DEBUG
+  PROMPT_COMMAND="_nib_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};_nib_ready=1"
+fi
+"#;
+
+fn bash_rc() -> PathBuf {
+    std::env::temp_dir().join("nib-bash").join("nib.bash")
+}
+
+/// How to start `shell` so its hooks load: bash interactive with our rcfile once it is written,
+/// anything else as a login shell (leading '-', so PATH gets set up).
+pub fn argv(shell: &str) -> Vec<String> {
+    let name = shell.rsplit('/').next().unwrap_or(shell);
+    if name == "bash" && bash_rc().is_file() {
+        return vec![name.into(), "--rcfile".into(), bash_rc().to_string_lossy().into()];
+    }
+    vec![format!("-{name}")]
+}
+
+/// Writes the hooks for zsh or bash (for zsh it also points the next zsh we start at the shim).
+/// Other shells get no blocks (plain terminal).
 pub fn install(shell: &str) -> std::io::Result<Option<PathBuf>> {
+    if shell.ends_with("/bash") {
+        let rc = bash_rc();
+        std::fs::create_dir_all(rc.parent().unwrap_or(&rc))?;
+        std::fs::write(&rc, BASH_HOOKS)?;
+        return Ok(Some(rc));
+    }
     if !shell.ends_with("/zsh") {
         return Ok(None);
     }
@@ -67,7 +120,7 @@ mod tests {
         std::env::set_var("ZDOTDIR", &user);
         std::env::set_var("TERM", "xterm-256color");
         super::install("/bin/zsh").unwrap();
-        let pty = Pty::spawn("/bin/zsh", "/tmp", 80, 24).unwrap();
+        let pty = Pty::spawn("/bin/zsh", &super::argv("/bin/zsh"), "/tmp", 80, 24).unwrap();
         let mut r = pty.reader().unwrap();
         unsafe { libc::fcntl(r.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
         let mut t = Term::new(80, 24);
@@ -110,6 +163,66 @@ mod tests {
         // The user's ZDOTDIR is handed back, so shells started from this one never see the shim.
         std::env::remove_var("ZDOTDIR");
     }
+
+    /// Both hook paths: PS0 on bash 4.4 and newer, the DEBUG trap on macOS's /bin/bash 3.2.
+    #[test]
+    fn real_bash_produces_blocks_with_exit_codes() {
+        let _env = crate::pty::SHELL_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // A stand-in home with a login file that sets its own PROMPT_COMMAND, which has to keep working.
+        let home = std::env::temp_dir().join("nib-test-bash-home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".bash_profile"), "PROMPT_COMMAND='_user_pc=$((_user_pc+1))'\n").unwrap();
+        let real_home = std::env::var("HOME").unwrap_or_default();
+        std::env::set_var("HOME", &home);
+        std::env::set_var("TERM", "xterm-256color");
+        let bashes = ["/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"];
+        for bash in bashes.iter().filter(|b| std::path::Path::new(b).is_file()) {
+            super::install(bash).unwrap();
+            let argv = super::argv(bash);
+            assert_eq!(argv[1], "--rcfile", "{bash}");
+            let pty = Pty::spawn(bash, &argv, "/tmp", 80, 24).unwrap();
+            let mut r = pty.reader().unwrap();
+            unsafe { libc::fcntl(r.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+            let mut t = Term::new(80, 24);
+            let mut pump = |t: &mut Term, done: &dyn Fn(&Term) -> bool| {
+                let end = Instant::now() + Duration::from_secs(5);
+                let mut buf = [0u8; 8192];
+                while !done(t) && Instant::now() < end {
+                    match r.read(&mut buf) {
+                        Ok(n @ 1..) => t.feed(&buf[..n]),
+                        _ => std::thread::sleep(Duration::from_millis(10)),
+                    }
+                }
+            };
+            pump(&mut t, &|t| t.integrated);
+            assert!(t.integrated, "{bash}: no prompt mark");
+            assert!(t.cwd.ends_with("/tmp"), "{bash}: cwd was {:?}", t.cwd);
+            // An empty line is not a command: it must not leave a block behind.
+            t.prompt_seen = false;
+            pty.write(b"\r");
+            pump(&mut t, &|t| t.prompt_seen);
+            let before = t.blocks.len();
+            for cmd in ["echo pc=$_user_pc", "false", "printf abc"] {
+                t.begin_block(cmd, "");
+                pty.write(format!("{cmd}\r").as_bytes());
+                let n = t.blocks.len();
+                pump(&mut t, &|t| t.blocks.len() == n && !t.blocks[n - 1].running());
+            }
+            let b = &t.blocks[before..];
+            let text = |b: &crate::term::Block| -> Vec<String> {
+                (b.start.unwrap()..b.end.unwrap())
+                    .map(|l| crate::term::row_to_string(t.line(l).unwrap()))
+                    .collect()
+            };
+            assert_eq!(b.len(), 3, "{bash}: {:?}", t.blocks.iter().map(|b| &b.cmd).collect::<Vec<_>>());
+            assert_eq!(b[0].exit, Some(0), "{bash}");
+            assert!(text(&b[0])[0].starts_with("pc="), "{bash}: {:?}", text(&b[0]));
+            assert_ne!(text(&b[0])[0], "pc=", "{bash}: the login file's PROMPT_COMMAND never ran");
+            assert_eq!((b[1].cmd.as_str(), b[1].exit), ("false", Some(1)), "{bash}");
+            assert_eq!(text(&b[2]), ["abc"], "{bash}");
+        }
+        std::env::set_var("HOME", real_home);
+    }
 }
 
 #[cfg(test)]
@@ -128,7 +241,7 @@ mod real_config {
         std::env::remove_var("ZDOTDIR");
         std::env::set_var("TERM", "xterm-256color");
         super::install("/bin/zsh").unwrap();
-        let pty = Pty::spawn("/bin/zsh", "/tmp", 100, 30).unwrap();
+        let pty = Pty::spawn("/bin/zsh", &super::argv("/bin/zsh"), "/tmp", 100, 30).unwrap();
         let mut r = pty.reader().unwrap();
         unsafe { libc::fcntl(r.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
         let mut t = Term::new(100, 30);
@@ -178,7 +291,7 @@ mod claude_probe {
         std::env::remove_var("CLAUDE_CODE_CHILD_SESSION");
         super::install("/bin/zsh").unwrap();
         let dir = env!("CARGO_MANIFEST_DIR");
-        let pty = Pty::spawn("/bin/zsh", dir, 110, 32).unwrap();
+        let pty = Pty::spawn("/bin/zsh", &super::argv("/bin/zsh"), dir, 110, 32).unwrap();
         let mut r = pty.reader().unwrap();
         unsafe { libc::fcntl(r.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
         let mut t = Term::new(110, 32);
