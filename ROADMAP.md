@@ -1,16 +1,15 @@
 # Roadmap
 
-What comes next, with rough hours for each part. About 31 hours in all.
+What comes next, with rough hours for each part. About 30 hours in all.
 
 ## Shells (about 3 hours)
 
 - Blocks in fish, through a conf.d file that hooks the fish_preexec and fish_postexec events.
 - On macOS's bash 3.2, keep a DEBUG trap from your config working next to the one Nib adds. Today Nib's replaces it.
 
-## Completion (about 4 hours)
+## Completion (about 3 hours)
 
 - Completion that knows the command: git subcommands and branches, npm and cargo scripts, make targets, ssh hosts from ~/.ssh/config.
-- Tab in the middle of a draft, not only at the end.
 
 ## Blocks (about 5 hours)
 

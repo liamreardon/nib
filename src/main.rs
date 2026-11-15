@@ -9,7 +9,7 @@ mod term;
 
 use iced::futures::{channel::mpsc, SinkExt, StreamExt};
 use iced::keyboard::{self, key::Named, Key as IKey};
-use iced::widget::text_editor::{Action as EdAction, Binding, Content, Edit, KeyPress, Motion, Status};
+use iced::widget::text_editor::{Action as EdAction, Binding, Content, Cursor, Edit, KeyPress, Motion, Position, Status};
 use iced::widget::{canvas, column, container, operation, row, text, text_editor, Id, Space};
 use iced::{event, window, Background, Border, Color, Element, Font, Length, Size, Subscription, Task, Theme};
 use keys::{Ctx, History, Key, KeyAction};
@@ -436,17 +436,17 @@ impl App {
     fn complete(&mut self) {
         let text = self.editor.text();
         let text = text.strip_suffix('\n').unwrap_or(&text);
+        // The editor's cursor is (line, byte in line); completion works on a byte offset in the draft.
         let at = self.editor.cursor().position;
-        let last = text.rsplit('\n').next().unwrap_or("");
-        // ponytail: completes only with the cursor at the end of the draft, the usual place for Tab.
-        if at.line + 1 < self.editor.line_count() || (at.column != last.chars().count() && at.column != last.len()) {
-            return;
-        }
+        let offset = text.split('\n').take(at.line).map(|l| l.len() + 1).sum::<usize>() + at.column;
         let path = std::env::var("PATH").unwrap_or_default();
         self.completions.clear();
-        if let Some((new, shown)) = complete::complete(text, &self.cwd(), &path) {
+        if let Some((new, cursor, shown)) = complete::complete_at(text, offset, &self.cwd(), &path) {
             self.editor = Content::with_text(&new);
-            self.editor.perform(EdAction::Move(Motion::DocumentEnd));
+            let before = &new[..cursor];
+            let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+            let position = Position { line: before.matches('\n').count(), column: cursor - line_start };
+            self.editor.move_to(Cursor { position, selection: None });
             self.completions = shown;
         }
     }
