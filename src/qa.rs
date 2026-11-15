@@ -5,6 +5,7 @@
 // ponytail: one fixed script; take a script file argument if more scenarios are needed.
 
 use crate::keys::{Key, KeyAction};
+use crate::render::BlockAct;
 use crate::{App, Msg, EDITOR};
 use iced::widget::text_editor::{Action as EdAction, Edit};
 use iced::widget::{operation, Id};
@@ -37,6 +38,9 @@ enum Step {
     ClickBox,
     Paste(&'static str),
     Shot(&'static str),
+    Hover(&'static str),             // mouse over the newest block of this command
+    Press(&'static str, BlockAct),   // that block's header button
+    ClearBox,                        // empty the input box
 }
 use Step::*;
 
@@ -61,7 +65,21 @@ fn script() -> Vec<Step> {
         Send,
         Until("completed command ran", finished, 5_000),
         Check("completed ls block exit 0", |a| last_cmd(a, 0).is_some_and(|b| b.cmd == "ls Cargo.toml" && b.exit == Some(0))),
+        Hover("ls Cargo.toml"),
         Shot("01-blocks"),
+        Press("ls Cargo.toml", BlockAct::CopyOutput),
+        Check("copy output shows copied", |a| a.done.is_some_and(|(_, x)| x == BlockAct::CopyOutput)),
+        Check("copied output is the block's text", |a| {
+            last_cmd(a, 0).is_some_and(|b| crate::render::block_output(&a.term, b) == "Cargo.toml")
+        }),
+        Shot("01b-copied"),
+        Type("draft kept"),
+        Press("false", BlockAct::Rerun),
+        Until("rerun ran false again", |a| finished(a) && a.term.blocks.iter().filter(|b| b.cmd == "false").count() == 2, 5_000),
+        Check("rerun keeps the draft in the box", |a| draft(a) == "draft kept"),
+        Shot("01c-rerun"),
+        Hover(""),
+        ClearBox,
         Cmd("claude"),
         Until("claude is up", |a| a.program && screen_has(a, "❯"), 20_000),
         Wait(1500),
@@ -305,6 +323,23 @@ pub fn next(app: &mut App) -> Task<Msg> {
             Paste(s) => {
                 run.advance();
                 return Task::batch([app.update(Msg::PasteRaw(Some(s.to_string()))), after(200)]);
+            }
+            ClearBox => {
+                run.advance();
+                app.editor = iced::widget::text_editor::Content::new();
+            }
+            Hover(cmd) | Press(cmd, _) => {
+                run.advance();
+                let i = app.term.blocks.iter().rposition(|b| !cmd.is_empty() && b.cmd == cmd);
+                if i.is_none() && !cmd.is_empty() {
+                    app.qa.as_mut().unwrap().log(false, &format!("no block for {cmd:?}"));
+                    continue;
+                }
+                let _ = app.update(Msg::Hover(i));
+                if let (Press(_, act), Some(i)) = (step, i) {
+                    return Task::batch([app.update(Msg::Block(i, act)), after(300)]);
+                }
+                return after(300);
             }
         }
     }

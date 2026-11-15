@@ -43,6 +43,8 @@ struct App {
     seek: Option<Seek>,
     qa: Option<qa::Run>, // self-test run (NIB_QA=<dir>)
     completions: Vec<String>, // choices from the last Tab, shown above the box
+    hover: Option<usize>,     // block under the mouse, which shows its buttons
+    done: Option<(usize, render::BlockAct)>, // last button clicked on that block
     cell: Size,
     window: Size,
     cache: canvas::Cache,
@@ -81,6 +83,8 @@ pub enum Msg {
     QaFocus(&'static str, bool, bool), // label, wanted, got
     Scroll(f32),
     CopySel,
+    Hover(Option<usize>),
+    Block(usize, render::BlockAct),
     Noop,
 }
 
@@ -101,6 +105,8 @@ impl App {
             seek: None,
             qa: qa::Run::from_env(),
             completions: vec![],
+            hover: None,
+            done: None,
             cell: render::cell_size(),
             window: START,
             cache: canvas::Cache::new(),
@@ -296,6 +302,13 @@ impl App {
                 }
             }
             Msg::Tick => self.cache.clear(),
+            Msg::Hover(h) => {
+                if h != self.hover {
+                    (self.hover, self.done) = (h, None);
+                    self.cache.clear();
+                }
+            }
+            Msg::Block(i, a) => return self.block_act(i, a),
             Msg::QaNext => return qa::next(self),
             Msg::QaShot(name, shot) => {
                 if let Some(r) = &mut self.qa {
@@ -466,6 +479,32 @@ impl App {
         Task::perform(tokio::time::sleep(Duration::from_millis(30)), move |_| Msg::Write(enter))
     }
 
+    /// A block's header button: copy its output or command, or run the command again.
+    fn block_act(&mut self, i: usize, a: render::BlockAct) -> Task<Msg> {
+        let Some(b) = self.term.blocks.get(i) else { return Task::none() };
+        self.done = Some((i, a));
+        self.cache.clear();
+        match a {
+            render::BlockAct::CopyOutput => iced::clipboard::write(render::block_output(&self.term, b)),
+            render::BlockAct::CopyCommand => iced::clipboard::write(b.cmd.clone()),
+            render::BlockAct::Rerun => {
+                if self.program {
+                    return Task::none();
+                }
+                // Sent like a typed command (history, its own block); a draft in the box survives.
+                let (cmd, draft) = (b.cmd.clone(), self.editor.text());
+                self.editor = Content::with_text(&cmd);
+                let sent = self.send();
+                let draft = draft.trim_end_matches('\n');
+                if !draft.is_empty() {
+                    self.recall(draft);
+                    self.browsing = false;
+                }
+                sent
+            }
+        }
+    }
+
     /// Where you are and what has the keyboard: folder, branch, and the program you're typing into.
     fn chips(&self) -> Element<'_, Msg> {
         let mut r = row![chip(render::tilde(&self.cwd()), render::FG)].spacing(6);
@@ -503,6 +542,9 @@ impl App {
             cell: self.cell,
             cache: &self.cache,
             direct: self.direct && self.program,
+            hover: self.hover,
+            done: self.done,
+            idle: !self.program,
         })
         .width(Length::Fill)
         .height(Length::Fill);

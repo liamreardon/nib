@@ -1,7 +1,7 @@
 //! Draws the terminal on an iced canvas. Two modes:
 //! - blocks: one card per command (header, command, output), newest at the bottom;
 //! - plain: the raw grid, for full-screen apps and shells without block marks.
-//! Mouse drags select text, the wheel scrolls history.
+//! Mouse drags select text, the wheel scrolls history. Hovering a finished block shows its buttons.
 
 use crate::term::{Block, Cell, Color as TColor, Row, Style, Term};
 use crate::Msg;
@@ -23,6 +23,7 @@ const PAD_TOP: f32 = 10.0;
 const HEADER_H: f32 = 20.0;
 const PAD_BOTTOM: f32 = 12.0;
 const SMALL: f32 = 12.0;
+const GAP: f32 = 14.0; // between header buttons
 pub const FG: Color = Color::from_rgb(0.87, 0.87, 0.89);
 pub const BG: Color = Color::from_rgb(0.10, 0.10, 0.12);
 pub const MUTED: Color = Color::from_rgb(0.52, 0.53, 0.58);
@@ -91,6 +92,67 @@ fn output_range(term: &Term, b: &Block) -> (usize, usize) {
         end = end.max(term.abs(term.row) + 1); // keep the line the program is typing on
     }
     (start, end.max(start))
+}
+
+/// Buttons on a finished block's header, shown while the mouse is over the block.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockAct {
+    CopyOutput,
+    CopyCommand,
+    Rerun,
+}
+
+impl BlockAct {
+    fn label(self) -> &'static str {
+        match self {
+            BlockAct::CopyOutput => "copy output",
+            BlockAct::CopyCommand => "copy command",
+            BlockAct::Rerun => "rerun",
+        }
+    }
+}
+
+/// What a block offers: nothing while it runs, and rerun only when the shell is at its prompt.
+pub fn block_acts(term: &Term, b: &Block, idle: bool) -> Vec<BlockAct> {
+    if b.running() {
+        return vec![];
+    }
+    let (start, end) = output_range(term, b);
+    let mut acts = Vec::new();
+    if end > start {
+        acts.push(BlockAct::CopyOutput);
+    }
+    if !b.cmd.is_empty() {
+        acts.push(BlockAct::CopyCommand);
+        if idle {
+            acts.push(BlockAct::Rerun);
+        }
+    }
+    acts
+}
+
+/// A block's output as plain text, one line per row, trailing spaces trimmed.
+pub fn block_output(term: &Term, b: &Block) -> String {
+    let (start, end) = output_range(term, b);
+    if end == start {
+        return String::new();
+    }
+    selected_text(term, ((start, 0), (end - 1, term.cols)))
+}
+
+fn small_width(s: &str) -> f32 {
+    <Renderer as atext::Renderer>::Paragraph::with_text(atext::Text {
+        content: s,
+        bounds: Size::INFINITE,
+        size: Pixels(SMALL),
+        line_height: LineHeight::default(),
+        font: Font::DEFAULT,
+        align_x: atext::Alignment::Left,
+        align_y: Vertical::Top,
+        shaping: Shaping::Advanced,
+        wrapping: Wrapping::None,
+    })
+    .min_width()
 }
 
 struct Placed {
@@ -327,6 +389,9 @@ pub struct View<'a> {
     pub cell: Size,
     pub cache: &'a canvas::Cache,
     pub direct: bool, // typing goes to the running program, not the input box
+    pub hover: Option<usize>, // block under the mouse; its buttons show
+    pub done: Option<(usize, BlockAct)>, // button just clicked, shown as "copied" until the mouse leaves
+    pub idle: bool, // the shell is at its prompt, so a command can be rerun
 }
 
 impl View<'_> {
@@ -351,6 +416,41 @@ impl View<'_> {
             let k = ((p.y - b.out_y) / self.cell.height).floor();
             (k >= 0.0 && (k as usize) < b.out.1 - b.out.0).then(|| (b.out.0 + k as usize, col(LEFT)))
         })
+    }
+
+    /// Index of the block under `p` (canvas coordinates), in block mode.
+    fn block_at(&self, p: Point, size: Size) -> Option<usize> {
+        if !blocks_mode(self.term) {
+            return None;
+        }
+        let (placed, _) = place(self.term, self.cell, size.height, self.scroll);
+        placed.iter().find(|b| p.y >= b.y && p.y < b.y + b.h).map(|b| b.i)
+    }
+
+    /// The hovered block's buttons, right-aligned on its header row.
+    fn act_rects(&self, p: &Placed, width: f32) -> Vec<(BlockAct, Rectangle)> {
+        let mut x = width - RIGHT;
+        let mut rects: Vec<_> = block_acts(self.term, &self.term.blocks[p.i], self.idle)
+            .into_iter()
+            .rev()
+            .map(|a| {
+                let w = small_width(a.label());
+                x -= w;
+                let r = Rectangle::new(Point::new(x, p.y + PAD_TOP - 3.0), Size::new(w, HEADER_H));
+                x -= GAP;
+                (a, r)
+            })
+            .collect();
+        rects.reverse();
+        rects
+    }
+
+    /// The button under `p`, if the mouse is over a block that shows them.
+    fn act_at(&self, p: Point, size: Size) -> Option<(usize, BlockAct)> {
+        let i = self.hover?;
+        let (placed, _) = place(self.term, self.cell, size.height, self.scroll);
+        let b = placed.iter().find(|b| b.i == i)?;
+        self.act_rects(b, size.width).into_iter().find(|(_, r)| r.contains(p)).map(|(a, _)| (i, a))
     }
 
     fn paint_plain(&self, f: &mut Frame) {
@@ -393,6 +493,13 @@ impl View<'_> {
                 place_label = format!("{place_label}   shell startup");
             }
             label(f, place_label, Point::new(LEFT, p.y + PAD_TOP), MUTED, false);
+            let acts = if self.hover == Some(p.i) { self.act_rects(p, size.width) } else { vec![] };
+            for (a, r) in &acts {
+                let copied = self.done == Some((p.i, *a)) && *a != BlockAct::Rerun;
+                let (s, c) = if copied { ("copied", ACCENT) } else { (a.label(), MUTED) };
+                label(f, s.into(), Point::new(r.x, p.y + PAD_TOP), c, false);
+            }
+            let status_x = acts.first().map_or(size.width - RIGHT, |(_, r)| r.x - GAP);
             let (status, color) = match (b.running(), b.exit, b.took) {
                 (true, ..) if b.began.elapsed() >= Duration::from_secs(1) => (format!("running  ·  {}", took(b.began.elapsed())), ACCENT),
                 (true, ..) => ("running".to_string(), ACCENT),
@@ -401,7 +508,7 @@ impl View<'_> {
                 (false, _, Some(d)) if d >= Duration::from_millis(100) => (took(d), MUTED), // instant ones say nothing
                 _ => (String::new(), MUTED),
             };
-            label(f, status, Point::new(size.width - RIGHT, p.y + PAD_TOP), color, true);
+            label(f, status, Point::new(status_x, p.y + PAD_TOP), color, true);
             if !b.cmd.is_empty() {
                 let first = b.cmd.lines().next().unwrap_or_default();
                 let more = if b.cmd.lines().count() > 1 { "  …" } else { "" };
@@ -445,6 +552,9 @@ impl Program<Msg> for View<'_> {
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 cursor.position_in(bounds)?;
+                if let Some((i, a)) = self.act_at(local()?, bounds.size()) {
+                    return Some(Action::publish(Msg::Block(i, a)).and_capture());
+                }
                 let pos = self.hit(local()?, bounds.size());
                 drag.0 = pos.is_some();
                 Some(Action::publish(pos.map_or(Msg::SelClear, Msg::SelStart)))
@@ -452,6 +562,11 @@ impl Program<Msg> for View<'_> {
             Event::Mouse(mouse::Event::CursorMoved { .. }) if drag.0 => {
                 Some(Action::publish(Msg::SelTo(self.hit(local()?, bounds.size())?)))
             }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let over = cursor.position_in(bounds).and_then(|_| self.block_at(local()?, bounds.size()));
+                (over != self.hover).then(|| Action::publish(Msg::Hover(over)))
+            }
+            Event::Mouse(mouse::Event::CursorLeft) => self.hover.is_some().then(|| Action::publish(Msg::Hover(None))),
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if drag.0 => {
                 drag.0 = false;
                 Some(Action::publish(Msg::Release))
@@ -475,13 +590,36 @@ impl Program<Msg> for View<'_> {
     }
 
     fn mouse_interaction(&self, _: &Drag, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
-        if cursor.is_over(bounds) { mouse::Interaction::Text } else { mouse::Interaction::default() }
+        match cursor.position_in(bounds) {
+            Some(p) if self.act_at(p, bounds.size()).is_some() => mouse::Interaction::Pointer,
+            Some(_) => mouse::Interaction::Text,
+            None => mouse::Interaction::default(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::block_shape;
+    use super::{block_acts, block_output, block_shape, BlockAct};
+    use crate::term::Term;
+
+    #[test]
+    fn block_buttons_and_copied_output() {
+        let mut t = Term::new(20, 8);
+        t.feed(b"\x1b]133;A\x07");
+        t.begin_block("ls", "");
+        t.feed(b"\r\n\x1b]133;C\x07a.txt   \r\nb.txt\r\n\x1b]133;D;0\x07\x1b]133;A\x07");
+        t.begin_block("true", "");
+        t.feed(b"\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07");
+        t.begin_block("sleep 9", "");
+        t.feed(b"\r\n\x1b]133;C\x07");
+        let b = &t.blocks;
+        assert_eq!(block_output(&t, &b[0]), "a.txt\nb.txt");
+        assert_eq!(block_acts(&t, &b[0], true), [BlockAct::CopyOutput, BlockAct::CopyCommand, BlockAct::Rerun]);
+        assert_eq!(block_acts(&t, &b[0], false), [BlockAct::CopyOutput, BlockAct::CopyCommand]);
+        assert_eq!(block_acts(&t, &b[1], true), [BlockAct::CopyCommand, BlockAct::Rerun]); // no output
+        assert!(block_acts(&t, &b[2], true).is_empty()); // still running
+    }
 
     // Regression: ISSUE-001 — block characters (Claude's logo, progress bars) drawn as font glyphs left gaps
     // Found by /qa on 2026-11-15
