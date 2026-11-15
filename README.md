@@ -1,5 +1,7 @@
 # Nib
 
+![Nib with four command blocks, the hover buttons on one of them, and Tab completion listing files above the input box](docs/screenshot.png)
+
 Nib is a terminal for macOS. Every command you run gets a card with the folder it ran in, the command, and its output. The card also shows how long the command took once that passes a tenth of a second, and the exit code in red when it fails.
 
 You type in a text box at the bottom of the window instead of on the prompt line, so a command can be edited like any text before it runs. Click to move the cursor, or select a word and type over it. Shift+Enter starts a new line and Enter sends it.
@@ -34,7 +36,7 @@ cargo test
 
 Some of the tests start a real zsh. Two are ignored by default: one needs your real .zshrc, the other is a probe you run by hand.
 
-`NIB_QA=<dir> ./target/release/nib` runs a scripted check of the real app and writes window snapshots and a PASS/FAIL log into that folder. Part of the script opens Claude Code to test typing into a running program, so that step needs `claude` installed. It types and clicks in Claude Code's input box but never sends a prompt.
+`NIB_QA=<dir> ./target/release/nib` runs a scripted check of the real app and writes window snapshots and a PASS/FAIL log into that folder. Part of the script opens Claude Code to test typing into a running program, so that step needs `claude` installed. It types and clicks in Claude Code's input box but never sends a prompt. Add `NIB_QA_DEMO=1` for the short run that takes the screenshot above.
 
 ## Built with
 
