@@ -3,7 +3,7 @@
 //! - plain: the raw grid, for full-screen apps and shells without block marks.
 //! Mouse drags select text, the wheel scrolls history.
 
-use crate::term::{Block, Color as TColor, Row, Style, Term};
+use crate::term::{Block, Cell, Color as TColor, Row, Style, Term};
 use crate::Msg;
 use iced::advanced::text::{self as atext, Paragraph as _};
 use iced::alignment::Vertical;
@@ -140,7 +140,8 @@ pub fn selected_text(term: &Term, sel: (Pos, Pos)) -> String {
         let Some(row) = term.line(l) else { continue };
         let from = if l == l0 { c0 } else { 0 };
         let to = if l == l1 { (c1 + 1).min(row.len()) } else { row.len() };
-        let s: String = row[from.min(to)..to].iter().filter(|c| !c.wide_tail).map(|c| c.ch).collect();
+        let mut s = String::new();
+        row[from.min(to)..to].iter().filter(|c| !c.wide_tail).for_each(|c| c.push_to(&mut s));
         out.push(s.trim_end().to_string());
     }
     out.join("\n")
@@ -284,13 +285,14 @@ fn paint_row(f: &mut Frame, row: &Row, cols: usize, x0: f32, y: f32, cell: Size,
         }
         let start = c;
         let mut content = String::new();
-        if cell.ch.is_ascii() {
-            while c < cells.len() && cells[c].ch.is_ascii() && !cells[c].wide_tail && cells[c].style == cell.style {
+        let plain = |x: &Cell| x.ch.is_ascii() && !x.has_marks() && !x.wide_tail;
+        if plain(cell) {
+            while c < cells.len() && plain(&cells[c]) && cells[c].style == cell.style {
                 content.push(cells[c].ch);
                 c += 1;
             }
         } else {
-            content.push(cell.ch);
+            cell.push_to(&mut content);
             c += 1;
         }
         f.fill_text(Text {
@@ -300,7 +302,7 @@ fn paint_row(f: &mut Frame, row: &Row, cols: usize, x0: f32, y: f32, cell: Size,
             size: Pixels(FONT_SIZE),
             line_height: LineHeight::Relative(LINE),
             font: styled_font(cell.style.bold, cell.style.italic),
-            shaping: if cell.ch.is_ascii() { Shaping::Basic } else { Shaping::Advanced },
+            shaping: if plain(cell) { Shaping::Basic } else { Shaping::Advanced },
             ..Text::default()
         });
         if cell.style.underline {

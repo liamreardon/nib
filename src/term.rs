@@ -35,13 +35,26 @@ impl Default for Style {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Cell {
     pub ch: char,
+    pub marks: [char; 2], // combining marks drawn on top of `ch` (accents, variation selectors); '\0' = none
     pub style: Style,
     pub wide_tail: bool, // right half of a double-width char; draw nothing here
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell { ch: ' ', style: Style::default(), wide_tail: false }
+        Cell { ch: ' ', marks: ['\0'; 2], style: Style::default(), wide_tail: false }
+    }
+}
+
+impl Cell {
+    pub fn has_marks(&self) -> bool {
+        self.marks[0] != '\0'
+    }
+
+    /// The char and its marks, as drawn or copied.
+    pub fn push_to(&self, s: &mut String) {
+        s.push(self.ch);
+        s.extend(self.marks.iter().filter(|&&m| m != '\0'));
     }
 }
 
@@ -106,6 +119,8 @@ pub struct Term {
     pub bracketed_paste: bool,
     pub cursor_visible: bool,
     autowrap: bool,
+    graphics: [bool; 2], // G0/G1 set to DEC line drawing (ESC ( 0, ESC ) 0)
+    shifted: bool,       // SO picked G1, SI goes back to G0
     pub title: String,
     pub replies: Vec<u8>, // answers to queries (cursor position, device attributes) to write back
     parser: Parser,
@@ -138,6 +153,8 @@ impl Term {
             bracketed_paste: false,
             cursor_visible: true,
             autowrap: true,
+            graphics: [false; 2],
+            shifted: false,
             title: String::new(),
             replies: Vec::new(),
             parser: Parser::new(),
@@ -273,7 +290,7 @@ impl Term {
 
     fn blank(&self) -> Cell {
         // Erased cells keep the current background (what full-screen apps expect).
-        Cell { ch: ' ', style: Style { bg: self.pen.bg, ..Style::default() }, wide_tail: false }
+        Cell { style: Style { bg: self.pen.bg, ..Style::default() }, ..Cell::default() }
     }
 
     fn blank_row(&self) -> Row {
@@ -318,7 +335,7 @@ impl Term {
     fn put_char(&mut self, c: char) {
         let w = c.width().unwrap_or(0);
         if w == 0 {
-            return; // ponytail: combining marks dropped; attach to previous cell if accents render wrong
+            return self.add_mark(c);
         }
         if self.wrap_pending && self.autowrap {
             self.col = 0;
@@ -334,15 +351,27 @@ impl Term {
             self.linefeed();
         }
         let style = self.pen;
-        self.lines[self.row][self.col] = Cell { ch: c, style, wide_tail: false };
+        self.lines[self.row][self.col] = Cell { ch: c, style, ..Cell::default() };
         if w == 2 {
-            self.lines[self.row][self.col + 1] = Cell { ch: ' ', style, wide_tail: true };
+            self.lines[self.row][self.col + 1] = Cell { style, wide_tail: true, ..Cell::default() };
         }
         if self.col + w >= self.cols {
             self.col = self.cols - 1;
             self.wrap_pending = true;
         } else {
             self.col += w;
+        }
+    }
+
+    /// A zero-width char goes on the char just printed: the cell before the cursor, or the cursor's
+    /// own cell when it sits at the right edge waiting to wrap.
+    fn add_mark(&mut self, m: char) {
+        let col = if self.wrap_pending { self.col } else if self.col > 0 { self.col - 1 } else { return };
+        let row = &mut self.lines[self.row];
+        let col = if row[col].wide_tail { col.saturating_sub(1) } else { col };
+        // ponytail: two marks per cell, later ones dropped; enough for stacked Vietnamese accents.
+        if let Some(slot) = row[col].marks.iter_mut().find(|m| **m == '\0') {
+            *slot = m;
         }
     }
 
@@ -424,12 +453,14 @@ impl Term {
 
 #[cfg(test)]
 pub fn row_to_string(row: &Row) -> String {
-    let s: String = row.iter().filter(|c| !c.wide_tail).map(|c| c.ch).collect();
+    let mut s = String::new();
+    row.iter().filter(|c| !c.wide_tail).for_each(|c| c.push_to(&mut s));
     s.trim_end().to_string()
 }
 
 impl Perform for Term {
     fn print(&mut self, c: char) {
+        let c = if self.graphics[usize::from(self.shifted)] { dec_graphics(c) } else { c };
         self.put_char(c);
     }
 
@@ -448,6 +479,8 @@ impl Perform for Term {
                 self.col = 0;
                 self.wrap_pending = false;
             }
+            0x0e => self.shifted = true,
+            0x0f => self.shifted = false,
             _ => {}
         }
     }
@@ -579,8 +612,13 @@ impl Perform for Term {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        if let [set @ (b'(' | b')')] = intermediates {
+            // Only line drawing and ASCII matter today; other national sets fall back to ASCII.
+            self.graphics[usize::from(*set == b')')] = byte == b'0';
+            return;
+        }
         if !intermediates.is_empty() {
-            return; // ponytail: charset switches (ESC ( 0 line drawing) ignored; modern apps send UTF-8
+            return;
         }
         match byte {
             b'7' => self.saved = Saved { row: self.row, col: self.col, pen: self.pen },
@@ -603,6 +641,18 @@ impl Perform for Term {
             }
             _ => {}
         }
+    }
+}
+
+/// DEC special graphics: what `` ` `` to `~` mean after ESC ( 0 (boxes in older curses apps, tmux borders).
+fn dec_graphics(c: char) -> char {
+    const MAP: [char; 31] = [
+        '◆', '▒', '␉', '␌', '␍', '␊', '°', '±', '␤', '␋', '┘', '┐', '┌', '└', '┼', '⎺',
+        '⎻', '─', '⎼', '⎽', '├', '┤', '┴', '┬', '│', '≤', '≥', 'π', '≠', '£', '·',
+    ];
+    match c {
+        '`'..='~' => MAP[c as usize - '`' as usize],
+        _ => c,
     }
 }
 
@@ -757,6 +807,26 @@ mod tests {
         t.begin_block("clear", "");
         t.feed(b"\r\n\x1b]133;C\x07\x1b[H\x1b[2J\x1b[3J\x1b]133;D;0\x07");
         assert!(t.blocks.is_empty());
+    }
+
+    #[test]
+    fn line_drawing_charset_maps_to_box_chars() {
+        assert_eq!(term("\x1b(0lqk\x1b(Bq").row_text(0), "┌─┐q");
+        // G1 set to line drawing, picked with SO and dropped with SI.
+        assert_eq!(term("\x1b)0x\x0ex\x0fx").row_text(0), "x│x");
+    }
+
+    #[test]
+    fn combining_marks_join_the_char_before_them() {
+        let t = term("e\u{301}x");
+        assert_eq!((t.row_text(0), t.col), ("e\u{301}x".into(), 2));
+        // After a wide char, and at the right edge where the cursor waits to wrap.
+        assert_eq!(term("日\u{308}").screen()[0][0].marks[0], '\u{308}');
+        let t = term("012345678e\u{301}\u{323}");
+        assert_eq!(t.screen()[0][9].marks, ['\u{301}', '\u{323}']);
+        assert_eq!(t.row, 0);
+        // Nothing before it on the line: dropped, cursor stays put.
+        assert_eq!(term("\u{301}a").row_text(0), "a");
     }
 
     #[test]
