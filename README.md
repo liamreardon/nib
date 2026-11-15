@@ -10,7 +10,7 @@ When a program in front of the shell is reading input, like a REPL or a nested s
 
 - Blocks in zsh and bash. The hooks print OSC 133 marks where each prompt and command starts, and OSC 7 with the current folder. zsh starts through a small ZDOTDIR shim that loads your usual .zshenv and .zshrc first. bash starts with an rcfile that loads /etc/profile and your .bash_profile the way a login shell would, and keeps your PROMPT_COMMAND. Other shells run as a plain terminal with no blocks.
 - Hover a finished block to copy its output or its command, or to run the command again. A rerun keeps whatever you were typing in the box.
-- History with Up and Down while the box is empty, and Tab completion of commands on your PATH and of file paths.
+- History with Up and Down while the box is empty, and Tab completion of commands on your PATH and of file paths, at the cursor wherever it is in the draft. After `git`, Tab also knows its subcommands, your git aliases, and branches and tags for checkout, switch, merge, rebase and the like.
 - Full screen programs like vim, less and top get the whole window and every key.
 - 256 color and 24 bit color, wide characters, bracketed paste, scrollback, mouse selection, Cmd+C and Cmd+V.
 - The current folder and git branch above the input box.
