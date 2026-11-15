@@ -143,6 +143,49 @@ mod tests {
     }
 
     #[test]
+    fn vim_moves_its_cursor_where_a_mouse_report_says() {
+        let _env = super::SHELL_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("TERM", "xterm-256color");
+        let file = std::env::temp_dir().join("nib-test-vim.txt");
+        std::fs::write(&file, "first line\nsecond line\n").unwrap();
+        let argv: Vec<String> = ["vim", "-u", "NONE", "-i", "NONE", "-N", "-n", "-c", "set mouse=a ttymouse=sgr"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain([file.to_string_lossy().to_string()])
+            .collect();
+        let pty = Pty::spawn("/usr/bin/vim", &argv, "/tmp", 80, 24).unwrap();
+        let mut r = pty.reader().unwrap();
+        unsafe { libc::fcntl(r.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+        let mut t = Term::new(80, 24);
+        // Like the app: feed output, answer the terminal queries vim sends.
+        let mut pump = |t: &mut Term, done: &dyn Fn(&Term) -> bool| {
+            let end = Instant::now() + Duration::from_secs(5);
+            let mut buf = [0u8; 8192];
+            while !done(t) && Instant::now() < end {
+                match r.read(&mut buf) {
+                    Ok(n @ 1..) => {
+                        t.feed(&buf[..n]);
+                        pty.write(&std::mem::take(&mut t.replies));
+                    }
+                    _ => std::thread::sleep(Duration::from_millis(10)),
+                }
+            }
+            done(t)
+        };
+        let shows = |s: &'static str| move |t: &Term| (0..t.rows).any(|i| t.row_text(i).contains(s));
+        assert!(pump(&mut t, &|t| shows("second line")(t) && t.mouse != crate::term::MouseMode::Off), "vim never asked for the mouse");
+        assert!(t.mouse_sgr, "ttymouse=sgr turns on mode 1006");
+        // Click on the "l" of "line" on the second row, then insert an X there.
+        let at = |release| crate::keys::mouse_report(0, false, release, 7, 1, (false, false, false), true).unwrap();
+        pty.write(&at(false));
+        pty.write(&at(true));
+        std::thread::sleep(Duration::from_millis(200));
+        pty.write(b"iX\x1b");
+        assert!(pump(&mut t, &shows("second Xline")), "the click didn't move vim's cursor");
+        pty.write(b":q!\r");
+    }
+
+    #[test]
     fn a_big_paste_never_blocks_the_caller() {
         let _env = super::SHELL_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let empty = std::env::temp_dir().join("nib-test-zdotdir");

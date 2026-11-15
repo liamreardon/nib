@@ -102,6 +102,23 @@ pub fn encode_raw(key: &Key, text: Option<&str>, shift: bool, ctrl: bool, app_cu
     })
 }
 
+/// One xterm mouse report. `button`: 0 left, 1 middle, 2 right, 3 none (motion with no button held),
+/// 64 and 65 wheel up and down. `mods`: shift, alt, ctrl. `col` and `row` count from 0.
+/// Without SGR (mode 1006) a release is button 3 and nothing past column or row 223 can be sent.
+pub fn mouse_report(button: u8, motion: bool, release: bool, col: usize, row: usize, mods: (bool, bool, bool), sgr: bool) -> Option<Vec<u8>> {
+    let flags = u32::from(motion) * 32 + u32::from(mods.0) * 4 + u32::from(mods.1) * 8 + u32::from(mods.2) * 16;
+    let (x, y) = (col + 1, row + 1);
+    if sgr {
+        let end = if release { 'm' } else { 'M' };
+        return Some(format!("\x1b[<{};{x};{y}{end}", u32::from(button) + flags).into_bytes());
+    }
+    let b = if release { 3 } else { u32::from(button) } + flags;
+    if x > 223 || y > 223 {
+        return None;
+    }
+    Some(vec![0x1b, b'[', b'M', (32 + b) as u8, (32 + x) as u8, (32 + y) as u8])
+}
+
 /// The paste part and the Return part are separate so the caller can leave a gap between them.
 pub fn payload(text: &str, bracketed: bool) -> (Vec<u8>, Vec<u8>) {
     if text.is_empty() {
@@ -163,6 +180,19 @@ mod tests {
     }
     fn draft() -> Ctx {
         Ctx::default()
+    }
+
+    #[test]
+    fn mouse_reports_in_both_encodings() {
+        let m = |b, motion, release, c, r, sgr| mouse_report(b, motion, release, c, r, (false, false, false), sgr);
+        assert_eq!(m(0, false, false, 4, 2, true), Some(b"\x1b[<0;5;3M".to_vec()));
+        assert_eq!(m(2, false, true, 4, 2, true), Some(b"\x1b[<2;5;3m".to_vec()), "SGR release keeps the button");
+        assert_eq!(m(0, true, false, 0, 0, true), Some(b"\x1b[<32;1;1M".to_vec()), "drag adds 32");
+        assert_eq!(m(65, false, false, 0, 0, true), Some(b"\x1b[<65;1;1M".to_vec()), "wheel down");
+        assert_eq!(mouse_report(0, false, false, 0, 0, (false, true, true), true), Some(b"\x1b[<24;1;1M".to_vec()), "alt 8, ctrl 16");
+        assert_eq!(m(0, false, false, 4, 2, false), Some(vec![0x1b, b'[', b'M', 32, 37, 35]));
+        assert_eq!(m(0, false, true, 4, 2, false), Some(vec![0x1b, b'[', b'M', 35, 37, 35]), "old release is button 3");
+        assert_eq!(m(0, false, false, 300, 2, false), None, "too far right for the old encoding");
     }
 
     #[test]

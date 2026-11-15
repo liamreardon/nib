@@ -84,6 +84,7 @@ pub enum Msg {
     Scroll(f32),
     CopySel,
     Hover(Option<usize>),
+    Focus(bool),
     Block(usize, render::BlockAct),
     Noop,
 }
@@ -309,6 +310,11 @@ impl App {
                 }
             }
             Msg::Block(i, a) => return self.block_act(i, a),
+            Msg::Focus(on) => {
+                if self.term.focus_events {
+                    self.write(if on { b"\x1b[I" } else { b"\x1b[O" });
+                }
+            }
             Msg::QaNext => return qa::next(self),
             Msg::QaShot(name, shot) => {
                 if let Some(r) = &mut self.qa {
@@ -607,6 +613,8 @@ impl App {
                     text: text.map(|t| t.to_string()),
                 })
             }
+            (iced::Event::Window(window::Event::Focused), _) => Some(Msg::Focus(true)),
+            (iced::Event::Window(window::Event::Unfocused), _) => Some(Msg::Focus(false)),
             _ => None,
         });
         Subscription::batch([

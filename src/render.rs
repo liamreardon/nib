@@ -3,11 +3,12 @@
 //! - plain: the raw grid, for full-screen apps and shells without block marks.
 //! Mouse drags select text, the wheel scrolls history. Hovering a finished block shows its buttons.
 
-use crate::term::{Block, Cell, Color as TColor, Row, Style, Term};
+use crate::term::{Block, Cell, Color as TColor, MouseMode, Row, Style, Term};
 use crate::Msg;
 use iced::advanced::text::{self as atext, Paragraph as _};
 use iced::alignment::Vertical;
 use iced::font::{Style as FontStyle, Weight};
+use iced::keyboard;
 use iced::mouse::{self, ScrollDelta};
 use iced::widget::canvas::{self, Action, Event, Frame, Geometry, Path, Program, Stroke, Text};
 use iced::widget::text::{LineHeight, Shaping, Wrapping};
@@ -542,13 +543,94 @@ impl View<'_> {
 }
 
 #[derive(Default)]
-pub struct Drag(bool);
+pub struct Drag {
+    selecting: bool,
+    held: Option<u8>,             // button down in a program that gets mouse reports
+    last: Option<(usize, usize)>, // cell of the last report, so motion inside one cell sends nothing
+    wheel: f32,                   // trackpad pixels not yet worth a wheel step
+    mods: keyboard::Modifiers,
+}
+
+impl View<'_> {
+    /// Mouse events for a full-screen program that asked for them (vim with mouse=a, htop, tmux), as
+    /// xterm reports them. Shift keeps the mouse for Nib, so text can still be selected.
+    fn mouse_report(&self, event: &Event, at: Option<Point>, st: &mut Drag) -> Option<Vec<u8>> {
+        let t = self.term;
+        if t.mouse == MouseMode::Off || blocks_mode(t) || st.mods.shift() || st.selecting {
+            return None;
+        }
+        let cell = |p: Point| {
+            let col = (((p.x - PAD) / self.cell.width).max(0.0) as usize).min(t.cols - 1);
+            let row = (((p.y - PAD) / self.cell.height).max(0.0) as usize).min(t.rows - 1);
+            (col, row)
+        };
+        let mods = (false, st.mods.alt(), st.mods.control());
+        let report = |b: u8, motion: bool, release: bool, (c, r): (usize, usize)| {
+            crate::keys::mouse_report(b, motion, release, c, r, mods, t.mouse_sgr)
+        };
+        let button = |b: &mouse::Button| match b {
+            mouse::Button::Left => Some(0),
+            mouse::Button::Middle => Some(1),
+            mouse::Button::Right => Some(2),
+            _ => None,
+        };
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(b)) => {
+                let (b, at) = (button(b)?, cell(at?));
+                (st.held, st.last) = (Some(b), Some(at));
+                report(b, false, false, at)
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(b)) => {
+                let b = button(b)?;
+                st.held.take()?; // only a release for a press the program saw
+                report(b, false, true, at.map(cell).or(st.last)?)
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let at = cell(at?);
+                let b = match (st.held, t.mouse) {
+                    (Some(b), MouseMode::Drag | MouseMode::Motion) => b,
+                    (None, MouseMode::Motion) => 3,
+                    _ => return None,
+                };
+                if st.last == Some(at) {
+                    return None;
+                }
+                st.last = Some(at);
+                report(b, true, false, at)
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                let at = cell(at?);
+                let steps = match delta {
+                    ScrollDelta::Lines { y, .. } => y.round() as i32,
+                    ScrollDelta::Pixels { y, .. } => {
+                        st.wheel += y;
+                        let n = (st.wheel / self.cell.height).trunc();
+                        st.wheel -= n * self.cell.height;
+                        n as i32
+                    }
+                };
+                let one = report(if steps > 0 { 64 } else { 65 }, false, false, at)?;
+                Some(one.repeat(steps.unsigned_abs() as usize)) // empty still keeps the wheel from Nib
+            }
+            _ => None,
+        }
+    }
+}
 
 impl Program<Msg> for View<'_> {
     type State = Drag;
 
     fn update(&self, drag: &mut Drag, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Action<Msg>> {
         let local = || cursor.position().map(|p| Point::new(p.x - bounds.x, p.y - bounds.y));
+        if let Event::Keyboard(keyboard::Event::ModifiersChanged(m)) = event {
+            drag.mods = *m;
+            return None;
+        }
+        let inside = cursor.position_in(bounds).and_then(|_| local());
+        let release = matches!(event, Event::Mouse(mouse::Event::ButtonReleased(_)));
+        if let Some(bytes) = self.mouse_report(event, if release { local() } else { inside }, drag) {
+            return Some(Action::publish(Msg::Write(bytes)).and_capture());
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 cursor.position_in(bounds)?;
@@ -556,10 +638,10 @@ impl Program<Msg> for View<'_> {
                     return Some(Action::publish(Msg::Block(i, a)).and_capture());
                 }
                 let pos = self.hit(local()?, bounds.size());
-                drag.0 = pos.is_some();
+                drag.selecting = pos.is_some();
                 Some(Action::publish(pos.map_or(Msg::SelClear, Msg::SelStart)))
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) if drag.0 => {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if drag.selecting => {
                 Some(Action::publish(Msg::SelTo(self.hit(local()?, bounds.size())?)))
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -567,8 +649,8 @@ impl Program<Msg> for View<'_> {
                 (over != self.hover).then(|| Action::publish(Msg::Hover(over)))
             }
             Event::Mouse(mouse::Event::CursorLeft) => self.hover.is_some().then(|| Action::publish(Msg::Hover(None))),
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if drag.0 => {
-                drag.0 = false;
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if drag.selecting => {
+                drag.selecting = false;
                 Some(Action::publish(Msg::Release))
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if cursor.is_over(bounds) => {
@@ -600,8 +682,34 @@ impl Program<Msg> for View<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_acts, block_output, block_shape, BlockAct};
+    use super::{block_acts, block_output, block_shape, BlockAct, Drag, View, PAD};
     use crate::term::Term;
+    use iced::mouse::{self, Button, ScrollDelta};
+    use iced::widget::canvas::{Cache, Event};
+    use iced::{keyboard, Point, Size};
+
+    #[test]
+    fn full_screen_programs_get_mouse_reports() {
+        let mut t = Term::new(80, 24);
+        t.feed(b"\x1b[?1049h\x1b[?1002h\x1b[?1006h"); // like vim with mouse=a
+        let cache = Cache::new();
+        let cell = Size::new(10.0, 20.0);
+        let v = View { term: &t, scroll: 0.0, sel: None, cell, cache: &cache, direct: false, hover: None, done: None, idle: false };
+        let mut st = Drag::default();
+        let at = |c: f32, r: f32| Some(Point::new(PAD + c * 10.0 + 1.0, PAD + r * 20.0 + 1.0));
+        let moved = Event::Mouse(mouse::Event::CursorMoved { position: Point::ORIGIN });
+        let send = |e: &Event, p, st: &mut Drag| v.mouse_report(e, p, st).map(|b| String::from_utf8(b).unwrap());
+        assert_eq!(send(&Event::Mouse(mouse::Event::ButtonPressed(Button::Left)), at(4.0, 2.0), &mut st).as_deref(), Some("\x1b[<0;5;3M"));
+        assert_eq!(send(&moved, at(5.0, 2.0), &mut st).as_deref(), Some("\x1b[<32;6;3M"), "drag to the next cell");
+        assert_eq!(send(&moved, at(5.2, 2.0), &mut st), None, "same cell: nothing new");
+        assert_eq!(send(&Event::Mouse(mouse::Event::ButtonReleased(Button::Left)), at(5.0, 2.0), &mut st).as_deref(), Some("\x1b[<0;6;3m"));
+        assert_eq!(send(&moved, at(9.0, 9.0), &mut st), None, "no button held: mode 1002 sends no motion");
+        let wheel = Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: 45.0 } });
+        assert_eq!(send(&wheel, at(0.0, 0.0), &mut st).as_deref(), Some("\x1b[<64;1;1M\x1b[<64;1;1M"), "45px is two steps of 20");
+        assert_eq!(send(&wheel, at(0.0, 0.0), &mut st).as_deref(), Some("\x1b[<64;1;1M\x1b[<64;1;1M"), "the 5px left over carries");
+        st.mods = keyboard::Modifiers::SHIFT;
+        assert_eq!(send(&Event::Mouse(mouse::Event::ButtonPressed(Button::Left)), at(1.0, 1.0), &mut st), None, "shift selects instead");
+    }
 
     #[test]
     fn block_buttons_and_copied_output() {
