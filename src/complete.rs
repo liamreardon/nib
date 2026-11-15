@@ -1,5 +1,6 @@
 //! Tab in the input box: finish the word before the cursor from PATH commands (first word) or from files
 //! in the shell's folder. One match completes it; several extend to what they share and get listed.
+//! Whatever follows the cursor stays where it is.
 // ponytail: no per-command knowledge (git branches, flags); add specs when plain paths stop being enough.
 
 use std::os::unix::fs::PermissionsExt;
@@ -64,7 +65,8 @@ fn commands(prefix: &str, path_var: &str) -> Vec<(String, String, bool)> {
 pub fn complete(draft: &str, cwd: &str, path_var: &str) -> Option<(String, Vec<String>)> {
     let start = word_start(draft);
     let (before, word) = draft.split_at(start);
-    let first = before.trim_end().is_empty() || before.trim_end().ends_with(['|', ';', '&', '(']);
+    let prev = before.trim_end_matches([' ', '\t']);
+    let first = prev.is_empty() || prev.ends_with(['|', ';', '&', '(', '\n']);
     let mut opts = if first && !word.contains('/') { commands(word, path_var) } else { paths(word, cwd) };
     opts.sort();
     let (first_opt, _, is_dir) = opts.first()?.clone();
@@ -78,9 +80,22 @@ pub fn complete(draft: &str, cwd: &str, path_var: &str) -> Option<(String, Vec<S
     Some((format!("{before}{}", if common.len() > word.len() { &common } else { word }), shown))
 }
 
+/// Tab with the cursor at byte `at`: completes the word ending there and keeps the rest of the draft.
+/// Returns the new draft, where the cursor goes (a byte offset) and the choices to show.
+pub fn complete_at(draft: &str, at: usize, cwd: &str, path_var: &str) -> Option<(String, usize, Vec<String>)> {
+    let at = (0..=at.min(draft.len())).rev().find(|&i| draft.is_char_boundary(i)).unwrap_or(0);
+    let (before, after) = draft.split_at(at);
+    let (mut new, shown) = complete(before, cwd, path_var)?;
+    if new.ends_with(' ') && after.starts_with([' ', '\n']) {
+        new.pop(); // don't double the space that's already there
+    }
+    let cursor = new.len();
+    Some((new + after, cursor, shown))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::complete;
+    use super::{complete, complete_at};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -106,6 +121,13 @@ mod tests {
         assert_eq!(c("ls | zzf"), Some(("ls | zzfoo ".into(), vec![])), "after a pipe: commands again");
         assert_eq!(c("cat nothing"), None);
         assert!(c("cat ").unwrap().1.iter().all(|n| !n.starts_with('.')), "dotfiles stay hidden");
+        // Mid-draft: the word before the cursor completes, the rest of the draft stays after it.
+        let at = |d: &str, i: usize| complete_at(d, i, &cwd, &path);
+        assert_eq!(at("cat be | wc -l", 6), Some(("cat beta | wc -l".into(), 8, vec![])));
+        assert_eq!(at("cat be", 6), Some(("cat beta ".into(), 9, vec![])), "at the end, as before");
+        assert_eq!(at("cat al && ls", 6).map(|(s, i, _)| (s, i)), Some(("cat alp && ls".into(), 7)));
+        assert_eq!(at("ls\nzzf", 6).map(|(s, _, _)| s), Some("ls\nzzfoo ".into()), "a new line starts a new command");
+        assert_eq!(at("cat be", 99).map(|(s, _, _)| s), Some("cat beta ".into()), "a cursor past the end is clamped");
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

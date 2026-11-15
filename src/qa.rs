@@ -41,6 +41,7 @@ enum Step {
     Hover(&'static str),             // mouse over the newest block of this command
     Press(&'static str, BlockAct),   // that block's header button
     ClearBox,                        // empty the input box
+    Left(usize),                     // move the box's cursor left
 }
 use Step::*;
 
@@ -65,6 +66,12 @@ fn script() -> Vec<Step> {
         Send,
         Until("completed command ran", finished, 5_000),
         Check("completed ls block exit 0", |a| last_cmd(a, 0).is_some_and(|b| b.cmd == "ls Cargo.toml" && b.exit == Some(0))),
+        Type("cat Cargo.l | wc -l"),
+        Left(8),
+        Tab,
+        Check("Tab mid-draft keeps what follows", |a| draft(a) == "cat Cargo.lock | wc -l"),
+        Check("cursor lands after the completed word", |a| a.editor.cursor().position.column == 14),
+        ClearBox,
         Hover("ls Cargo.toml"),
         Shot("01-blocks"),
         Press("ls Cargo.toml", BlockAct::CopyOutput),
@@ -323,6 +330,12 @@ pub fn next(app: &mut App) -> Task<Msg> {
             Paste(s) => {
                 run.advance();
                 return Task::batch([app.update(Msg::PasteRaw(Some(s.to_string()))), after(200)]);
+            }
+            Left(n) => {
+                run.advance();
+                for _ in 0..n {
+                    let _ = app.update(Msg::Edit(EdAction::Move(iced::widget::text_editor::Motion::Left)));
+                }
             }
             ClearBox => {
                 run.advance();
