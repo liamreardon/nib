@@ -146,6 +146,27 @@ fn script() -> Vec<Step> {
     ]
 }
 
+/// NIB_QA_DEMO=1 with NIB_QA: a short run for the README screenshot (docs/screenshot.png).
+fn demo() -> Vec<Step> {
+    vec![
+        Until("shell sends block marks", |a| a.term.integrated, 15_000),
+        // ~ rather than the full path, so the picture shows no home folder. Leaked once per demo run.
+        Cmd(Box::leak(format!("cd {}", crate::render::tilde(env!("CARGO_MANIFEST_DIR"))).into_boxed_str())),
+        Until("cd finished", finished, 5_000),
+        Cmd("git --no-pager log --oneline --no-merges -5"),
+        Until("git log finished", finished, 5_000),
+        Cmd("ls src"),
+        Until("ls finished", finished, 5_000),
+        Cmd("grep -c fn src/nothing.rs"),
+        Until("grep finished", finished, 5_000),
+        Type("cat src/"),
+        Tab,
+        Hover("ls src"),
+        Wait(300),
+        Shot("demo"),
+    ]
+}
+
 fn draft(a: &App) -> String {
     a.editor.text().trim_end_matches('\n').to_string()
 }
@@ -185,7 +206,8 @@ impl Run {
         let dir = PathBuf::from(std::env::var_os("NIB_QA")?);
         std::fs::create_dir_all(&dir).ok()?;
         let _ = std::fs::remove_file(dir.join("qa.log"));
-        Some(Run { dir, steps: script(), i: 0, since: Instant::now(), fails: 0 })
+        let steps = if std::env::var_os("NIB_QA_DEMO").is_some() { demo() } else { script() };
+        Some(Run { dir, steps, i: 0, since: Instant::now(), fails: 0 })
     }
 
     pub fn log(&mut self, pass: bool, what: &str) {
